@@ -1,1 +1,1 @@
-# daily-digest
+# Daily Digest
