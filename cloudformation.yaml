@@ -1,0 +1,440 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Create AWS Resources
+
+Parameters:
+  CrawledContentBucketName:
+    Description: Unique S3 bucket name for storing crawled content
+    Type: String
+
+  SummaryResultsBucketName:
+    Description: Unique S3 bucket name for storing summary results
+    Type: String
+
+  ClassificationResultsBucketName:
+    Description: Unique S3 bucket name for storing news classification results
+    Type: String
+  
+  InferencePayloadBucketName:
+    Description: Unique S3 bucket name for storing payload for inference endpoints
+    Type: String
+  
+  SummaryInferenceEndpoint:
+    Type: String
+  
+  ClassificationInferenceEndpoint:
+    Type: String
+
+  GitHubRepo:
+    Type: String
+  
+  GitHubBranch:
+    Type: String
+  
+  GitHubToken:
+    Type: String
+
+  GitHubUser:
+    Type: String
+
+Resources:
+  CrawlHistoryTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: crawl-history
+      AttributeDefinitions:
+        - AttributeName: UrlHash
+          AttributeType: S
+      KeySchema:
+        - AttributeName: UrlHash
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+  CrawlQueueTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: crawl-queue
+      AttributeDefinitions:
+        - AttributeName: UrlHash
+          AttributeType: S
+      KeySchema:
+        - AttributeName: UrlHash
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+  StartCrawlLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: start-crawl
+      Runtime: python3.9
+      Timeout: 300
+      Role: !GetAtt StartCrawlLambdaIAMRole.Arn
+      Handler: index.lambda_handler
+      Environment:
+        Variables:
+          CRAWL_HISTORY_TABLE: !Ref CrawlHistoryTable
+          CRAWL_QUEUE_TABLE: !Ref CrawlQueueTable
+          REGION: !Ref AWS::Region
+      Code:
+        ZipFile: |
+          import json
+          import os
+
+          def lambda_handler(event, context):
+              print("Received event: " + json.dumps(event))
+              message = 'Hello World!'
+              return message
+
+  StartCrawlLambdaIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: StartCrawlLambdaRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - lambda.amazonaws.com
+            Action:
+            - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: logs:*
+            Resource: arn:aws:logs:*:*:*
+      - PolicyName: crawl-table
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: dynamodb:*
+            Resource:
+            - !GetAtt CrawlHistoryTable.Arn
+            - !GetAtt CrawlQueueTable.Arn
+
+  CrawlerLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: web-crawler
+      Runtime: python3.9
+      Timeout: 300
+      Role: !GetAtt CrawlerLambdaIAMRole.Arn
+      Handler: index.lambda_handler
+      Environment:
+        Variables:
+          CONTENT_BUCKET: !Ref CrawledContentBucketName
+          CRAWL_HISTORY_TABLE: !Ref CrawlHistoryTable
+          CRAWL_QUEUE_TABLE: !Ref CrawlQueueTable
+          REGION: !Ref AWS::Region
+      Code:
+        ZipFile: |
+          import json
+          import os
+
+          def lambda_handler(event, context):
+              print("Received event: " + json.dumps(event))
+              message = 'Hello World!'
+              return message
+
+  CrawlerLambdaIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CrawlerLambdaRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - lambda.amazonaws.com
+            Action:
+            - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: logs:*
+            Resource: arn:aws:logs:*:*:*
+      - PolicyName: crawled-content-bucket
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - s3:PutObject
+            Resource:
+            - !Sub arn:aws:s3:::${CrawledContentBucketName}
+            - !Sub arn:aws:s3:::${CrawledContentBucketName}/*
+      - PolicyName: crawl-table
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: dynamodb:*
+            Resource:
+            - !GetAtt CrawlHistoryTable.Arn
+            - !GetAtt CrawlQueueTable.Arn
+
+  CrawledContentBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref CrawledContentBucketName
+      NotificationConfiguration:
+        LambdaConfigurations:
+        - Event: s3:ObjectCreated:Put
+          Function: !GetAtt ContentProcessorLambda.Arn
+
+  ContentProcessorLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: content-processor
+      Runtime: python3.9
+      Timeout: 300
+      Role: !GetAtt ContentProcessorLambdaIAMRole.Arn
+      Handler: index.lambda_handler
+      Environment:
+        Variables:
+          METADATA_TABLE: !Ref MetadataTable
+          INF_METADATA_TABLE: !Ref InferenceMetadataTable
+          PAYLOAD_BUCKET: !Ref InferencePayloadBucketName
+          SUMMARY_ENDPOINT: !Ref SummaryInferenceEndpoint
+          CLASSIFICATION_ENDPOINT: !Ref ClassificationInferenceEndpoint
+          REGION: !Ref AWS::Region
+      Code:
+        ZipFile: |
+          import json
+          import os
+
+          def lambda_handler(event, context):
+              print("Received event: " + json.dumps(event))
+              message = 'Hello World!'
+              return message
+
+  ContentProcessorLambdaIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ContentProcessorLambdaRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - lambda.amazonaws.com
+            Action:
+            - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: logs:*
+            Resource: arn:aws:logs:*:*:*
+      - PolicyName: crawled-content-bucket
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - s3:PutBucketNotification
+            - s3:GetObject
+            Resource:
+            - !Sub arn:aws:s3:::${CrawledContentBucketName}
+            - !Sub arn:aws:s3:::${CrawledContentBucketName}/*
+      - PolicyName: payload-bucket
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - s3:PutObject
+            Resource:
+            - !Sub arn:aws:s3:::${InferencePayloadBucketName}
+            - !Sub arn:aws:s3:::${InferencePayloadBucketName}/*
+      - PolicyName: metadata-table
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: dynamodb:*
+            Resource:
+            - !GetAtt MetadataTable.Arn
+            - !GetAtt InferenceMetadataTable.Arn
+      - PolicyName: inference-endpoint
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - sagemaker:InvokeEndpoint
+            - sagemaker:InvokeEndpointAsync
+            Resource:
+            - !Sub arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:endpoint/${SummaryInferenceEndpoint}
+            - !Sub arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:endpoint/${ClassificationInferenceEndpoint}
+
+  ContentProcessorLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ContentProcessorLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Sub arn:aws:s3:::${CrawledContentBucketName}
+
+  InferencePayloadBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref InferencePayloadBucketName
+
+  SummaryResultsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref SummaryResultsBucketName
+      NotificationConfiguration:
+        LambdaConfigurations:
+        - Event: s3:ObjectCreated:Put
+          Function: !GetAtt IndexLambda.Arn
+
+  ClassificationResultsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref ClassificationResultsBucketName
+      NotificationConfiguration:
+        LambdaConfigurations:
+        - Event: s3:ObjectCreated:Put
+          Function: !GetAtt IndexLambda.Arn
+
+  IndexLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: news-index
+      Runtime: python3.9
+      Timeout: 300
+      Role: !GetAtt IndexLambdaIAMRole.Arn
+      Handler: index.lambda_handler
+      Environment:
+        Variables:
+          METADATA_TABLE: !Ref MetadataTable
+          INF_METADATA_TABLE: !Ref InferenceMetadataTable
+          # OPENSEARCH_DOMAIN: !Ref
+          SUMMARY_BUCKET: !Ref SummaryResultsBucketName
+          CLASSIFICATION_BUCKET: !Ref ClassificationResultsBucketName
+          REGION: !Ref AWS::Region
+      Code:
+        ZipFile: |
+          import json
+          import os
+
+          def lambda_handler(event, context):
+              print("Received event: " + json.dumps(event))
+              message = 'Hello World!'
+              return message
+
+  IndexLambdaIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: IndexLambdaRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - lambda.amazonaws.com
+            Action:
+            - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: logs:*
+            Resource: arn:aws:logs:*:*:*
+      - PolicyName: inference-results-bucket
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - s3:PutBucketNotification
+            - s3:GetObject
+            Resource:
+            - !Sub arn:aws:s3:::${ClassificationResultsBucketName}
+            - !Sub arn:aws:s3:::${ClassificationResultsBucketName}/*
+            - !Sub arn:aws:s3:::${SummaryResultsBucketName}
+            - !Sub arn:aws:s3:::${SummaryResultsBucketName}/*
+      - PolicyName: metadata-table
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: dynamodb:*
+            Resource:
+            - !GetAtt MetadataTable.Arn
+            - !GetAtt InferenceMetadataTable.Arn
+
+  IndexLambdaInvokePermissionClassification:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt IndexLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Sub arn:aws:s3:::${ClassificationResultsBucketName}
+
+  IndexLambdaInvokePermissionSummary:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt IndexLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Sub arn:aws:s3:::${SummaryResultsBucketName}
+
+  InferenceMetadataTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: inference-metadata
+      AttributeDefinitions:
+        - AttributeName: OutputLocation
+          AttributeType: S
+      KeySchema:
+        - AttributeName: OutputLocation
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+  MetadataTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: news-metadata
+      AttributeDefinitions:
+        - AttributeName: UrlHash
+          AttributeType: S
+      KeySchema:
+        - AttributeName: UrlHash
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+# TODO:
+# Open Search domain
+# CodePipeline
+# API Gateway & related lambdas
