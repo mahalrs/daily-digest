@@ -1,9 +1,11 @@
 import json
 import os
+import re
 
 import boto3
 
-from keybert import KeyBERT
+from bs4 import BeautifulSoup
+# from keybert import KeyBERT
 
 REGION = os.environ['REGION']
 INF_METADATA_TABLE = os.environ['INF_METADATA_TABLE']
@@ -23,7 +25,7 @@ def lambda_handler(event, context):
     print(metadata)
 
     insert_item(metadata, METADATA_TABLE)
-    put_payload(metadata['UrlHash'], PAYLOAD_BUCKET, content)
+    put_payload(metadata['UrlHash'], PAYLOAD_BUCKET, content[:2200])
 
     # async inference endpoint
     out_c = run_inference(content, metadata['UrlHash'], PAYLOAD_BUCKET,
@@ -80,20 +82,21 @@ def insert_item(item, table):
 
 
 def get_keywords(text):
-    kw_model = KeyBERT('./keybert')
-    keywords = kw_model.extract_keywords(text,
-                                         stop_words='english',
-                                         keyphrase_ngram_range=(1, 2),
-                                         use_maxsum=True,
-                                         use_mmr=True,
-                                         diversity=0.7,
-                                         nr_candidates=20,
-                                         top_n=10)
+    # kw_model = KeyBERT('./keybert')
+    # keywords = kw_model.extract_keywords(text,
+    #                                      stop_words='english',
+    #                                      keyphrase_ngram_range=(1, 2),
+    #                                      use_maxsum=True,
+    #                                      use_mmr=True,
+    #                                      diversity=0.7,
+    #                                      nr_candidates=20,
+    #                                      top_n=10)
 
-    kws = []
-    for k in keywords:
-        kws.append(k[0])
-    return kws
+    # kws = []
+    # for k in keywords:
+    #     kws.append(k[0])
+    # return kws
+    return ['kw1', 'kw2']
 
 
 def get_page_content(event):
@@ -121,14 +124,26 @@ def get_data(event):
 def parse_data(raw_content):
     # TODO:
     #       Do HTML parsing to retrieve required data
-    #       For now, assume raw_content is json
 
-    content = json.loads(raw_content)
+    soup = BeautifulSoup(raw_content, 'html.parser')
+    title = str(soup.find('title').string)
+    text = ''
 
-    title = content['title']
-    source = content['source']
-    pdate = content['date']
-    text = content['text']
+    # getting all the paragraphs
+    for para in soup.find_all('p'):
+        text += str(para.get_text())
+
+    text = re.sub(r'[^\w\s]', '', text)
+
+    source = 'unknown'
+    pdate = 'Mon 28 Nov 2022 11.00 EST'
+
+    # content = json.loads(raw_content)
+
+    # title = content['title']
+    # source = content['source']
+    # pdate = content['date']
+    # text = content['text']
 
     metadata = {
         'title': title,
