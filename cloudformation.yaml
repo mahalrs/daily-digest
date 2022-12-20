@@ -23,6 +23,9 @@ Parameters:
   
   ClassificationInferenceEndpoint:
     Type: String
+  
+  NewsOpenSearchIndex:
+    Type: String
 
   GitHubRepo:
     Type: String
@@ -329,7 +332,8 @@ Resources:
         Variables:
           METADATA_TABLE: !Ref MetadataTable
           INF_METADATA_TABLE: !Ref InferenceMetadataTable
-          # OPENSEARCH_DOMAIN: !Ref
+          OPENSEARCH_ENDPOINT: !GetAtt NewsOpenSearchDomain.DomainEndpoint
+          OPENSEARCH_INDEX: !Ref NewsOpenSearchIndex
           SUMMARY_BUCKET: !Ref SummaryResultsBucketName
           CLASSIFICATION_BUCKET: !Ref ClassificationResultsBucketName
           REGION: !Ref AWS::Region
@@ -434,7 +438,800 @@ Resources:
         ReadCapacityUnits: 5
         WriteCapacityUnits: 5
 
+  HistoryTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: news-history
+      AttributeDefinitions:
+        - AttributeName: key
+          AttributeType: S
+      KeySchema:
+        - AttributeName: key
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+  NewsOpenSearchDomain:
+    Type: AWS::OpenSearchService::Domain
+    Properties:
+      DomainName: summaries
+      EngineVersion: OpenSearch_1.3
+      ClusterConfig:
+        InstanceCount: 1
+        InstanceType: t3.small.search
+      EBSOptions:
+        EBSEnabled: true
+        VolumeSize: 10
+        VolumeType: gp3
+      AccessPolicies:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            AWS:
+            - !GetAtt IndexLambdaIAMRole.Arn
+            - !GetAtt TrendingLambdaIAMRole.Arn
+            - !GetAtt RecommendLambdaIAMRole.Arn
+          Action: es:ESHttp*
+          Resource:
+            - !Sub arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/summaries/*
+
+  TrendingLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: trending-news
+      Runtime: python3.9
+      Timeout: 300
+      Role: !GetAtt TrendingLambdaIAMRole.Arn
+      Handler: index.lambda_handler
+      Environment:
+        Variables:
+          METADATA_TABLE: !Ref MetadataTable
+          OPENSEARCH_ENDPOINT: !GetAtt NewsOpenSearchDomain.DomainEndpoint
+          OPENSEARCH_INDEX: !Ref NewsOpenSearchIndex
+          REGION: !Ref AWS::Region
+      Code:
+        ZipFile: |
+          import json
+          def lambda_handler(event, context):
+            print("Received event: " + json.dumps(event))
+            message = 'Hello World! Trending Lambda'
+            return message
+
+  TrendingLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt TrendingLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn:
+        Fn::Sub: "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APIGateway}/*"
+  
+  TrendingLambdaIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: TrendingLambdaRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - lambda.amazonaws.com
+            Action:
+            - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: logs:*
+            Resource: arn:aws:logs:*:*:*
+      - PolicyName: metadata-table
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: dynamodb:*
+            Resource:
+            - !GetAtt MetadataTable.Arn
+
+  RecommendLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: recommend-news
+      Runtime: python3.9
+      Timeout: 300
+      Role: !GetAtt RecommendLambdaIAMRole.Arn
+      Handler: index.lambda_handler
+      Environment:
+        Variables:
+          METADATA_TABLE: !Ref MetadataTable
+          HISTORY_TABLE: !Ref HistoryTable
+          OPENSEARCH_ENDPOINT: !GetAtt NewsOpenSearchDomain.DomainEndpoint
+          OPENSEARCH_INDEX: !Ref NewsOpenSearchIndex
+          REGION: !Ref AWS::Region
+      Code:
+        ZipFile: |
+          import json
+          def lambda_handler(event, context):
+            print("Received event: " + json.dumps(event))
+            message = 'Hello World! Trending Lambda'
+            return message
+
+  RecommendLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt RecommendLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn:
+        Fn::Sub: "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APIGateway}/*"
+  
+  RecommendLambdaIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: RecommendLambdaRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - lambda.amazonaws.com
+            Action:
+            - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: logs:*
+            Resource: arn:aws:logs:*:*:*
+      - PolicyName: metadata-table
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: dynamodb:*
+            Resource:
+            - !GetAtt MetadataTable.Arn
+      - PolicyName: history-table
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: dynamodb:*
+            Resource:
+            - !GetAtt HistoryTable.Arn
+
+  SummaryLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: news-summary
+      Runtime: python3.9
+      Timeout: 300
+      Role: !GetAtt SummaryLambdaIAMRole.Arn
+      Handler: index.lambda_handler
+      Environment:
+        Variables:
+          METADATA_TABLE: !Ref MetadataTable
+          HISTORY_TABLE: !Ref HistoryTable
+          REGION: !Ref AWS::Region
+      Code:
+        ZipFile: |
+          import json
+          def lambda_handler(event, context):
+            print("Received event: " + json.dumps(event))
+            message = 'Hello World! Trending Lambda'
+            return message
+
+  SummaryLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt SummaryLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn:
+        Fn::Sub: "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APIGateway}/*"
+  
+  SummaryLambdaIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: SummaryLambdaRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - lambda.amazonaws.com
+            Action:
+            - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: logs:*
+            Resource: arn:aws:logs:*:*:*
+      - PolicyName: metadata-table
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: dynamodb:*
+            Resource:
+            - !GetAtt MetadataTable.Arn
+      - PolicyName: history-table
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: dynamodb:*
+            Resource:
+            - !GetAtt HistoryTable.Arn
+
+  HistoryLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: news-history
+      Runtime: python3.9
+      Timeout: 300
+      Role: !GetAtt HistoryLambdaIAMRole.Arn
+      Handler: index.lambda_handler
+      Environment:
+        Variables:
+          METADATA_TABLE: !Ref MetadataTable
+          HISTORY_TABLE: !Ref HistoryTable
+          REGION: !Ref AWS::Region
+      Code:
+        ZipFile: |
+          import json
+          def lambda_handler(event, context):
+            print("Received event: " + json.dumps(event))
+            message = 'Hello World! Trending Lambda'
+            return message
+
+  HistoryLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt HistoryLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn:
+        Fn::Sub: "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APIGateway}/*"
+  
+  HistoryLambdaIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: HistoryLambdaRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - lambda.amazonaws.com
+            Action:
+            - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: logs:*
+            Resource: arn:aws:logs:*:*:*
+      - PolicyName: metadata-table
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: dynamodb:*
+            Resource:
+            - !GetAtt MetadataTable.Arn
+      - PolicyName: history-table
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: dynamodb:*
+            Resource:
+            - !GetAtt HistoryTable.Arn
+
+  CORSLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: cors-options
+      Runtime: python3.9
+      Timeout: 300
+      Role: !GetAtt CORSLambdaIAMRole.Arn
+      Handler: index.lambda_handler
+      Code:
+        ZipFile: |
+          import json
+          def lambda_handler(event, context):
+            res = {
+              'statusCode': 200,
+              'headers': {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Headers': '*',
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': '*',
+              },
+              'body': json.dumps('CORS enabled...')
+            }
+            return res
+
+  CORSLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt CORSLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn:
+        Fn::Sub: "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APIGateway}/*"
+  
+  CORSLambdaIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CORSLambdaRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - lambda.amazonaws.com
+            Action:
+            - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: logs:*
+            Resource: arn:aws:logs:*:*:*
+
+  APIGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: News API
+      Description: API for the Latest News Summaries
+      FailOnWarnings: True
+      EndpointConfiguration:
+        Types:
+        - REGIONAL
+      Body:
+        swagger: '2.0'
+        info:
+          title: News API
+          description: 'News Summary API, built during the Cloud and Big Data course at Columbia.'
+          version: 1.0.0
+        schemes:
+          - https
+        basePath: /v1
+        produces:
+          - application/json
+        paths:
+          /trending:
+            get:
+              summary: latest news fetch method
+              description: |
+                This API returns zero or more latest news headlines.
+              operationId: trendingNews
+              produces:
+                - application/json
+              responses:
+                '200':
+                  description: trending news results
+                  schema:
+                    $ref: '#/definitions/HeadlineResponse'
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                '403':
+                  description: Unauthorized
+                  schema:
+                    $ref: '#/definitions/Error'
+                '500':
+                  description: Unexpected error
+                  schema:
+                    $ref: '#/definitions/Error'
+              # security:
+              # - api_key: []
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                responses:
+                  default:
+                    statusCode: 200
+                httpMethod: POST
+                passthroughBehavior: WHEN_NO_MATCH
+                uri:
+                  Fn::Sub: "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TrendingLambda.Arn}/invocations"
+            options:
+              consumes:
+              - "application/json"
+              produces:
+              - "application/json"
+              responses:
+                "200":
+                  description: "200 response"
+                  schema:
+                    $ref: "#/definitions/HeadlineResponse"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                    Access-Control-Allow-Methods:
+                      type: "string"
+                    Access-Control-Allow-Headers:
+                      type: "string"
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                responses:
+                  default:
+                    statusCode: 200
+                httpMethod: POST
+                passthroughBehavior: WHEN_NO_MATCH
+                uri:
+                  Fn::Sub: "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CORSLambda.Arn}/invocations"
+          /recommend:
+            get:
+              summary: recommended news fetch method
+              description: |
+                This API returns zero or more latest recommended news headlines.
+              operationId: recommendNews
+              produces:
+                - application/json
+              parameters:
+                - name: userid
+                  in: header
+                  required: true
+                  type: string
+              responses:
+                '200':
+                  description: recommended news results
+                  schema:
+                    $ref: '#/definitions/HeadlineResponse'
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                '403':
+                  description: Unauthorized
+                  schema:
+                    $ref: '#/definitions/Error'
+                '500':
+                  description: Unexpected error
+                  schema:
+                    $ref: '#/definitions/Error'
+              # security:
+              # - api_key: []
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                responses:
+                  default:
+                    statusCode: 200
+                httpMethod: POST
+                passthroughBehavior: WHEN_NO_MATCH
+                uri:
+                  Fn::Sub: "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${RecommendLambda.Arn}/invocations"
+            options:
+              consumes:
+              - "application/json"
+              produces:
+              - "application/json"
+              responses:
+                "200":
+                  description: "200 response"
+                  schema:
+                    $ref: "#/definitions/HeadlineResponse"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                    Access-Control-Allow-Methods:
+                      type: "string"
+                    Access-Control-Allow-Headers:
+                      type: "string"
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                responses:
+                  default:
+                    statusCode: 200
+                httpMethod: POST
+                passthroughBehavior: WHEN_NO_MATCH
+                uri:
+                  Fn::Sub: "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CORSLambda.Arn}/invocations"
+          /summary:
+            get:
+              summary: fetch summary for news headline
+              description: |
+                This API returns summary of a given headline.
+              operationId: summaryNews
+              produces:
+                - application/json
+              parameters:
+                - name: userid
+                  in: header
+                  required: true
+                  type: string
+                - name: key
+                  in: path
+                  required: true
+                  type: string
+                  description: key of the headline to retrieve its summary
+              responses:
+                '200':
+                  description: news summary
+                  schema:
+                    $ref: '#/definitions/SummaryResponse'
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                '403':
+                  description: Unauthorized
+                  schema:
+                    $ref: '#/definitions/Error'
+                '500':
+                  description: Unexpected error
+                  schema:
+                    $ref: '#/definitions/Error'
+              # security:
+              # - api_key: []
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                responses:
+                  default:
+                    statusCode: 200
+                httpMethod: POST
+                passthroughBehavior: WHEN_NO_MATCH
+                uri:
+                  Fn::Sub: "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SummaryLambda.Arn}/invocations"
+            options:
+              consumes:
+              - "application/json"
+              produces:
+              - "application/json"
+              responses:
+                "200":
+                  description: "200 response"
+                  schema:
+                    $ref: "#/definitions/SummaryResponse"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                    Access-Control-Allow-Methods:
+                      type: "string"
+                    Access-Control-Allow-Headers:
+                      type: "string"
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                responses:
+                  default:
+                    statusCode: 200
+                httpMethod: POST
+                passthroughBehavior: WHEN_NO_MATCH
+                uri:
+                  Fn::Sub: "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CORSLambda.Arn}/invocations"
+          /history:
+            post:
+              summary: record user clickable behavior
+              description: |
+                This API records given history event and returns ok on success.
+              operationId: historyNews
+              consumes:
+                - application/json
+              produces:
+                - application/json
+              parameters:
+              - name: userid
+                in: header
+                required: true
+                type: string
+              - in: body
+                name: HistoryReq
+                required: true
+                schema:
+                  $ref: '#/definitions/HistoryRequest'
+              responses:
+                '200':
+                  description: track user history
+                  schema:
+                    $ref: '#/definitions/HistoryResponse'
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                '403':
+                  description: Unauthorized
+                  schema:
+                    $ref: '#/definitions/Error'
+                '500':
+                  description: Unexpected error
+                  schema:
+                    $ref: '#/definitions/Error'
+              # security:
+              # - api_key: []
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                responses:
+                  default:
+                    statusCode: 200
+                httpMethod: POST
+                passthroughBehavior: WHEN_NO_MATCH
+                uri:
+                  Fn::Sub: "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${HistoryLambda.Arn}/invocations"
+            options:
+              consumes:
+              - "application/json"
+              produces:
+              - "application/json"
+              responses:
+                "200":
+                  description: "200 response"
+                  schema:
+                    $ref: "#/definitions/HistoryResponse"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                    Access-Control-Allow-Methods:
+                      type: "string"
+                    Access-Control-Allow-Headers:
+                      type: "string"
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                responses:
+                  default:
+                    statusCode: 200
+                httpMethod: POST
+                passthroughBehavior: WHEN_NO_MATCH
+                uri:
+                  Fn::Sub: "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CORSLambda.Arn}/invocations"
+        # securityDefinitions:
+        #   api_key:
+        #     type: apiKey
+        #     name: x-api-key
+        #     in: header
+        definitions:
+          HeadlineResponse:
+            type: object
+            properties:
+              results:
+                type: array
+                items:
+                  $ref: '#/definitions/Headline'
+          Headline:
+            type: object
+            properties:
+              title:
+                type: string
+              key:
+                type: string
+              tags:
+                type: array
+                items:
+                  type: string
+          SummaryResponse:
+            type: object
+            properties:
+              title:
+                type: string
+              key:
+                type: string
+              text:
+                type: string
+              source:
+                type: string
+              liked:
+                type: boolean
+              tags:
+                type: array
+                items:
+                  type: string
+          HistoryRequest:
+            type: object
+            properties:
+              key:
+                type: string
+              event:
+                type: string # like | dislike | read | readmore
+          HistoryResponse:
+            type: object
+            properties:
+              ok:
+                type: boolean
+          Error:
+            type: object
+            properties:
+              code:
+                type: integer
+                format: int32
+              message:
+                type: string
+
+  APIGatewayIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: APIGatewayRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - apigateway.amazonaws.com
+            Action:
+            - sts:AssumeRole
+      Path: "/"
+      ManagedPolicyArns:
+        - >-
+          arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+
+  APIGatewayAccount:
+    Type: AWS::ApiGateway::Account
+    Properties:
+      CloudWatchRoleArn: !GetAtt APIGatewayIAMRole.Arn
+
+  APIGatewayDeployment:
+    DependsOn: APIGatewayAccount
+    Type: AWS::ApiGateway::Deployment
+    Properties:
+      RestApiId: !Ref APIGateway
+      StageName: dev-v3
+      StageDescription:
+        LoggingLevel: INFO
+        MetricsEnabled: True
+        MethodSettings:
+        - DataTraceEnabled: True
+          HttpMethod: "*"
+          LoggingLevel: INFO
+          ResourcePath: "/*"
+          MetricsEnabled: True
+  
+  # APIGatewayKey:
+  #   Type: AWS::ApiGateway::ApiKey
+  #   DependsOn:
+  #     - APIGatewayDeployment
+  #     - APIGateway
+  #   Properties:
+  #     Name: DevApiKey
+  #     Description: Cloudformation API Key
+  #     Enabled: true
+  #     StageKeys:
+  #       - RestApiId: !Ref APIGateway
+  #         StageName: dev-v3
+  
+  # APIGatewayUsagePlan:
+  #   Type: AWS::ApiGateway::UsagePlan
+  #   DependsOn: APIGatewayKey
+  #   Properties:
+  #     ApiStages:
+  #       - ApiId: !Ref APIGateway
+  #         Stage: dev-v3
+  #     Quota:
+  #       Limit: 5000
+  #       Period: MONTH
+  #     Throttle:
+  #       BurstLimit: 20
+  #       RateLimit: 10
+  #     UsagePlanName: DevApiKeyUsagePlan
+
+  # APIGatewayUsagePlanLink:
+  #   Type: AWS::ApiGateway::UsagePlanKey
+  #   Properties:
+  #     KeyId: !Ref APIGatewayKey
+  #     KeyType: API_KEY
+  #     UsagePlanId: !Ref APIGatewayUsagePlan
+
+
 # TODO:
-# Open Search domain
 # CodePipeline
-# API Gateway & related lambdas
