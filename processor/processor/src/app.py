@@ -3,6 +3,8 @@ import os
 
 import boto3
 
+from keybert import KeyBERT
+
 REGION = os.environ['REGION']
 INF_METADATA_TABLE = os.environ['INF_METADATA_TABLE']
 METADATA_TABLE = os.environ['METADATA_TABLE']
@@ -53,7 +55,7 @@ def run_inference(text, key, bucket, endpoint_name):
 
     print(response)
 
-    output_loc = response['OutputLocation']
+    output_loc = response['OutputLocation'].split('/')[-1]
     return output_loc
 
 
@@ -78,10 +80,19 @@ def insert_item(item, table):
 
 
 def get_keywords(text):
-    # TODO: extract using keyBert
-    #
+    kw_model = KeyBERT('./keybert')
+    keywords = kw_model.extract_keywords(text,
+                                         stop_words='english',
+                                         keyphrase_ngram_range=(1, 2),
+                                         use_maxsum=True,
+                                         use_mmr=True,
+                                         diversity=0.7,
+                                         nr_candidates=20,
+                                         top_n=10)
 
-    kws = ['covid', 'china']
+    kws = []
+    for k in keywords:
+        kws.append(k[0])
     return kws
 
 
@@ -108,17 +119,16 @@ def get_data(event):
 
 
 def parse_data(raw_content):
-    # TODO: Ignore HTML parsing for now
-    #
+    # TODO:
+    #       Do HTML parsing to retrieve required data
+    #       For now, assume raw_content is json
 
-    title = 'Zero-Covid protests are spreading across China – but a violent crackdown will follow'
-    source = 'The Guardian'
-    pdate = 'Mon 28 Nov 2022 11.00 EST'
-    text = '''
-    Zero-Covid protests are spreading across China – but a violent crackdown will follow
-China’s heavy-handed zero-Covid policy was intended to save lives. Now, it’s having devastating consequences. Last week, a fire killed at least 10 people, including children, in a tower block in Urumqi, the capital of Xinjiang. As ever in China, official numbers are unreliable, and the true number of casualties may be much higher. It’s clear that the citizens now protesting across China blame the tragedy on the lockdown, despite the claims of local officials that fire escapes in the building were not locked. Horrific videos of the fire show emergency services attempting in vain to douse the flames from beyond a roadblock, while victims scream from the windows pleading for somebody to open the doors of their apartments.
-For once, the suffering of Xinjiang’s people seems to have evoked widespread empathy among China’s wider populace.
-    '''
+    content = json.loads(raw_content)
+
+    title = content['title']
+    source = content['source']
+    pdate = content['date']
+    text = content['text']
 
     metadata = {
         'title': title,
