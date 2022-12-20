@@ -32,10 +32,13 @@ def lambda_handler(event, context):
 
 def handle_event(userid, key, event):
     if event == 'like':
-        insert_item({'key': userid + 'like', 'read': True}, HISTORY_TABLE)
+        insert_item({'key': userid + key + 'like', 'read': True}, HISTORY_TABLE)
         handle_counter(userid, key, True)
     elif event == 'dislike':
-        insert_item({'key': userid + 'like', 'read': False}, HISTORY_TABLE)
+        insert_item({
+            'key': userid + key + 'like',
+            'read': False
+        }, HISTORY_TABLE)
         handle_counter(userid, key, False)
     elif event == 'read' or event == 'readmore':
         handle_counter(userid, key, True)

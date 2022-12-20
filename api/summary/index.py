@@ -17,7 +17,7 @@ def lambda_handler(event, context):
 
     data = get_item({'UrlHash': key}, METADATA_TABLE)['Item']
 
-    liked_res = get_item({'key': userid + 'like'}, HISTORY_TABLE)
+    liked_res = get_item({'key': userid + key + 'like'}, HISTORY_TABLE)
     liked = False
     if 'Item' in liked_res:
         liked = liked_res['Item']['read']
