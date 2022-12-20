@@ -1,1 +1,2 @@
 w3lib
+boto3

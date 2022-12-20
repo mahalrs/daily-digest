@@ -6,6 +6,7 @@ from playwright.sync_api import sync_playwright
 
 from core import extract_page_content_and_urls
 from utils import create_crawl_input, get_hash, normalize_url
+from s3 import save_content
 
 
 def crawl(browser, crawl_input):
@@ -15,13 +16,14 @@ def crawl(browser, crawl_input):
     #         Ignore content from start urls; we only care about links
     #
 
+    start_urls = set(crawl_input.start_urls)
     url_queue = deque(crawl_input.start_urls)
     seen_urls = set()
 
     count = 0
 
     while url_queue:
-        if count >= 3:
+        if count >= 500:
             break
         count += 1
 
@@ -57,6 +59,9 @@ def crawl(browser, crawl_input):
         print('Found', len(out.new_urls), 'new urls')
 
         # Handle content only if not from initial start urls...
+        if url not in start_urls:
+            nurl = normalize_url(out.real_url)
+            save_content(get_hash(nurl), nurl, out.content)
 
         #
         # TODO:

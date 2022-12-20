@@ -6,10 +6,8 @@ from utils import create_crawl_input
 from local import crawl
 
 
-def lambda_handler(event, context):
-    print('Received event: ' + json.dumps(event, indent=2))
-
-    crawl_input = create_crawl_input('./crawl_input.txt')
+def main():
+    crawl_input = create_crawl_input('./src/crawl_input.txt')
 
     with sync_playwright() as pw:
         print('Opening browser..')
@@ -20,3 +18,7 @@ def lambda_handler(event, context):
 
     message = 'Hello World! Playwright!'
     return message
+
+
+if __name__ == '__main__':
+    main()
